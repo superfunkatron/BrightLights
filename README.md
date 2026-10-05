@@ -14,7 +14,7 @@ An interactive smart library system designed for an extensive vinyl record colle
 * **Frontend:** Static Web App (HTML/CSS/JS) hosted on GitHub Pages.
 * **Database & API:** Supabase (PostgreSQL & PostgREST Data API).
 * **Hardware Controller:** MagWLED (ESP32 running WLED firmware).
-* **Catalog Data Source:** Discogs API & Oggee Club exports.
+* **Catalog Data Source:** Discogs API & Ogger Club exports.
 
 ## Repository Structure
 * `/supabase` - SQL schema migrations (`cubes`, `records`, `tracks`).
