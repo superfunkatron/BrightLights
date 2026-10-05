@@ -1,0 +1,21 @@
+# Local Environment Variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# Dependency Folders
+node_modules/
+dist/
+build/
+.cache/
+
+# OS / Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temp Data & Exports
+*_backup.csv
+*.log
