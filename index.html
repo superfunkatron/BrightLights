@@ -115,7 +115,7 @@ const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
                 let dbQuery = supabaseClient
                     .from('records')
                     .select('*')
-                    .limit(25);
+                    .limit(100);
 
                 if (query.length > 0) {
                     // Search across Artists, Title, and Folder columns using OR filter
