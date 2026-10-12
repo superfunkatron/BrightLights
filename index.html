@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BrightLights | Vinyl Library Search</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        vinylDark: '#121212',
+                        vinylCard: '#1e1e1e',
+                        accentGold: '#d4af37',
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Supabase JS SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-vinylDark text-gray-100 min-h-screen font-sans antialiased flex flex-col justify-between">
+
+    <!-- Header Section -->
+    <header class="w-full border-b border-gray-800 bg-vinylCard/50 backdrop-blur sticky top-0 z-50">
+        <div class="max-w-3xl mx-auto px-4 py-4 flex items-center justify-between">
+            <h1 class="text-xl font-bold tracking-wider flex items-center gap-2">
+                🎵 <span class="text-accentGold">BRIGHTLIGHTS</span>
+            </h1>
+            <span id="record-count" class="text-xs text-gray-400 bg-gray-800 px-2.5 py-1 rounded-full">Loading library...</span>
+        </div>
+    </header>
+
+    <!-- Main Search Container -->
+    <main class="max-w-3xl w-full mx-auto px-4 py-6 flex-grow">
+        
+        <!-- Search Input -->
+        <div class="relative mb-6">
+            <input 
+                type="text" 
+                id="search-input" 
+                placeholder="Search artist, album title, or genre..." 
+                class="w-full bg-vinylCard border border-gray-700 rounded-xl px-4 py-3.5 pl-11 text-sm focus:outline-none focus:border-accentGold transition shadow-lg text-gray-100 placeholder-gray-500"
+                autofocus
+            >
+            <svg class="w-5 h-5 text-gray-500 absolute left-3.5 top-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+            </svg>
+        </div>
+
+        <!-- Results Status / Loading -->
+        <div id="status-message" class="text-xs text-gray-400 mb-4 px-1">Type above to search your collection...</div>
+
+        <!-- Results Grid/List -->
+        <div id="results-container" class="space-y-3">
+            <!-- Dynamic search cards will appear here -->
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="w-full border-t border-gray-800 py-4 text-center text-xs text-gray-500">
+        Kallax Smart Shelf System &bull; Powered by Supabase & GitHub Pages
+    </footer>
+
+    <!-- Frontend Logic Script -->
+    <script>
+        // --- 1. CONFIGURATION ---
+        // Replace these with your actual Supabase project URL and Public Anon Key
+        const SUPABASE_URL = 'YOUR_SUPABASE_URL_HERE';
+        const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY_HERE';
+
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        const searchInput = document.getElementById('search-input');
+        const resultsContainer = document.getElementById('results-container');
+        const statusMessage = document.getElementById('status-message');
+        const recordCountBadge = document.getElementById('record-count');
+
+        // --- 2. INITIAL DATA LOAD ---
+        async function initApp() {
+            try {
+                // Get total row count
+                const { count, error } = await supabaseClient
+                    .from('records')
+                    .select('*', { count: 'exact', head: true });
+                
+                if (error) throw error;
+                recordCountBadge.textContent = `${count || 0} Records Housed`;
+                
+                // Load initial recent additions or random subset
+                performSearch('');
+            } catch (err) {
+                console.error('Initialization error:', err);
+                statusMessage.textContent = 'Error connecting to database. Check API keys.';
+            }
+        }
+
+        // --- 3. SEARCH & RENDER LOGIC ---
+        let searchTimeout;
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(searchTimeout);
+            const query = e.target.value.trim();
+            // Debounce to prevent hammering API on every keystroke
+            searchTimeout = setTimeout(() => performSearch(query), 300);
+        });
+
+        async function performSearch(query) {
+            statusMessage.textContent = 'Searching collection...';
+            
+            try {
+                let dbQuery = supabaseClient
+                    .from('records')
+                    .select('*')
+                    .limit(25);
+
+                if (query.length > 0) {
+                    // Search across Artists, Title, and Folder columns using OR filter
+                    dbQuery = dbQuery.or(`Artists.ilike.%${query}%,Title.ilike.%${query}%,Folder.ilike.%${query}%`);
+                } else {
+                    dbQuery = dbQuery.order('id', { ascending: false }); // Show newest imports by default
+                }
+
+                const { data, error } = await dbQuery;
+
+                if (error) throw error;
+
+                renderResults(data, query);
+            } catch (err) {
+                console.error('Search error:', err);
+                statusMessage.textContent = 'Failed to fetch search results.';
+            }
+        }
+
+        function renderResults(records, query) {
+            resultsContainer.innerHTML = '';
+
+            if (!records || records.length === 0) {
+                statusMessage.textContent = query ? `No matches found for "${query}"` : 'No records found.';
+                return;
+            }
+
+            statusMessage.textContent = `Showing ${records.length} result${records.length === 1 ? '' : 's'}`;
+
+            records.forEach(record => {
+                // Extract clean cube code from Folder string (e.g., "001A. Bangers" -> "001A")
+                const rawFolder = record.Folder || 'Unassigned';
+                const cubeId = rawFolder.substring(0, 4).trim();
+                const genreLabel = rawFolder.length > 4 ? rawFolder.substring(4).replace(/^\.\s*/, '') : '';
+
+                const card = document.createElement('div');
+                card.className = 'bg-vinylCard border border-gray-800 hover:border-gray-700 rounded-xl p-4 transition flex items-center justify-between gap-4 shadow-sm';
+                
+                card.innerHTML = `
+                    <div class="space-y-1 overflow-hidden">
+                        <div class="flex items-center gap-2">
+                            <span class="bg-accentGold/10 text-accentGold text-xs px-2 py-0.5 rounded font-mono font-semibold tracking-wide">
+                                📍 ${cubeId}
+                            </span>
+                            ${genreLabel ? `<span class="text-xs text-gray-400 truncate">${genreLabel}</span>` : ''}
+                        </div>
+                        <h2 class="font-semibold text-gray-100 truncate text-sm sm:text-base">${escapeHTML(record.Title)}</h2>
+                        <p class="text-xs text-gray-400 truncate">${escapeHTML(record.Artists)} &bull; <span class="text-gray-500">${record.Year || 'Unknown Year'}</span></p>
+                    </div>
+                    <div class="flex-shrink-0">
+                        <button onclick="triggerCubeLight('${cubeId}')" class="bg-gray-800 hover:bg-accentGold hover:text-vinylDark text-gray-300 px-3 py-2 rounded-lg text-xs font-medium transition flex items-center gap-1.5">
+                            💡 Light Up
+                        </button>
+                    </div>
+                `;
+                resultsContainer.appendChild(card);
+            });
+        }
+
+        // Placeholder hook for when your MagWLED hardware is online
+        function triggerCubeLight(cubeId) {
+            alert(`Signal sent to illuminate cube: ${cubeId}\n(Will connect to MagWLED IP endpoint in Phase 4)`);
+        }
+
+        function escapeHTML(str) {
+            return div = document.createElement('div'), div.textContent = str, div.innerHTML;
+        }
+
+        // Run on load
+        initApp();
+    </script>
+</body>
+</html>
