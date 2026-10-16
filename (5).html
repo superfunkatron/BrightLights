@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#121212">
+    <title>BrightLights | Vinyl Library Search</title>
+
+    <!-- Tailwind Play CDN: fine for a personal project. For a leaner build, compile once with the
+         Tailwind CLI to a static CSS file and drop this script (removes flash-of-unstyled-content). -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        vinylDark: '#121212',
+                        vinylCard: '#1e1e1e',
+                        accentGold: '#d4af37',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Pinned supabase-js. 2.118.0 was the npm "latest" 2.x on 2026-10-16, i.e. what the old "@2" URL resolved to.
+         dist/umd/supabase.js is the package's own jsdelivr entry file (verified in the npm tarball). Bump deliberately. -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js"></script>
+
+    <style>
+        html { color-scheme: dark; -webkit-tap-highlight-color: transparent; }
+        body { background: #121212; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+        /* Safe-area padding for notched phones */
+        .safe-x { padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1rem, env(safe-area-inset-right)); }
+        .safe-b { padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+        /* Hide the native search "x" so we can use our own larger clear button */
+        input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+    </style>
+</head>
+<body class="text-gray-100 min-h-dvh font-sans antialiased flex flex-col">
+
+    <!-- Sticky header: brand + count, search, shelf chips -->
+    <header class="sticky top-0 z-50 bg-vinylDark/95 backdrop-blur border-b border-gray-800">
+        <div class="max-w-3xl mx-auto safe-x pt-3 pb-2">
+            <div class="flex items-center justify-between mb-3">
+                <h1 class="text-lg font-bold tracking-wider flex items-center gap-2">
+                    <span aria-hidden="true">🎵</span> <span class="text-accentGold">BRIGHTLIGHTS</span>
+                </h1>
+                <span id="record-count" class="text-sm text-gray-300 bg-gray-800 px-2.5 py-1 rounded-full">Loading…</span>
+            </div>
+
+            <div class="relative">
+                <label for="search-input" class="sr-only">Search artist, album title or shelf</label>
+                <input
+                    type="search"
+                    id="search-input"
+                    placeholder="Search artist, album or shelf…"
+                    enterkeyhint="search"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    spellcheck="false"
+                    class="w-full h-12 bg-vinylCard border border-gray-600 rounded-xl pl-11 pr-12 text-base text-gray-50 placeholder-gray-400 focus:outline-none focus:border-accentGold shadow-lg"
+                >
+                <svg class="w-5 h-5 text-gray-400 absolute left-3.5 top-3.5 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                </svg>
+                <button id="clear-btn" type="button" hidden aria-label="Clear search"
+                    class="absolute right-1 top-1 w-10 h-10 rounded-lg text-gray-300 active:bg-gray-700 text-xl leading-none">✕</button>
+            </div>
+
+            <!-- Shelf chips: one per cube, in physical order, plus "Not on a shelf" -->
+            <div id="chips" class="flex gap-2 overflow-x-auto no-scrollbar mt-3 pb-1" role="group" aria-label="Filter by shelf"></div>
+        </div>
+    </header>
+
+    <main class="max-w-3xl w-full mx-auto safe-x py-4 flex-grow">
+        <div id="status-message" role="status" aria-live="polite" class="text-sm text-gray-300 mb-3 px-1">Loading library…</div>
+        <div id="results-container" class="space-y-3"></div>
+        <button id="more-btn" type="button" hidden
+            class="w-full h-12 mt-4 rounded-xl bg-vinylCard border border-gray-700 text-gray-100 text-sm font-medium active:border-accentGold">Show more</button>
+        <button id="retry-btn" type="button" hidden
+            class="w-full h-12 mt-4 rounded-xl bg-vinylCard border border-accentGold text-accentGold text-sm font-medium">Retry</button>
+    </main>
+
+    <footer class="w-full border-t border-gray-800 py-4 safe-b text-center text-sm text-gray-400">
+        Kallax Smart Shelf System &bull; Powered by Supabase &amp; GitHub Pages
+    </footer>
+
+    <!-- Toast -->
+    <div id="toast" role="status" aria-live="polite"
+        class="fixed left-1/2 -translate-x-1/2 bottom-6 z-[60] max-w-[90vw] px-4 py-2.5 rounded-xl bg-gray-100 text-vinylDark text-sm font-medium shadow-xl opacity-0 pointer-events-none transition-opacity duration-200"></div>
+
+    <!-- Card template: filled via textContent only, so record data is never parsed as HTML -->
+    <template id="card-template">
+        <article class="bg-vinylCard border border-gray-800 rounded-2xl p-3 flex items-center gap-3">
+            <div data-role="cube"
+                class="shrink-0 w-[4.25rem] h-[4.25rem] rounded-xl flex items-center justify-center font-mono font-bold text-lg tracking-wide border"></div>
+            <div class="min-w-0 flex-1">
+                <h2 data-role="title" class="font-semibold text-gray-50 text-base leading-snug line-clamp-2"></h2>
+                <p data-role="artist" class="text-sm text-gray-300 line-clamp-1"></p>
+                <p data-role="meta" class="text-sm text-gray-400 line-clamp-1"></p>
+            </div>
+            <button data-role="light" type="button"
+                class="shrink-0 w-12 h-12 rounded-xl bg-gray-800 text-xl text-gray-100 active:bg-accentGold active:text-vinylDark disabled:opacity-60 transition"></button>
+        </article>
+    </template>
+
+    <script>
+    (() => {
+        'use strict';
+
+        /* =====================================================================
+         * 1. CONFIG
+         * ===================================================================== */
+        const CONFIG = {
+            // Supabase anon/publishable keys are public by design. Safety comes from Row Level
+            // Security: `records` and `cubes` should allow SELECT only for the anon role.
+            supabaseUrl: 'https://queretkibwcohrkzrwbl.supabase.co',
+            supabaseAnonKey: 'sb_publishable_0osIdK7MzOkiAqfx2jQ00A_J5UAbZ9R',
+            table: 'records',
+            // Only these columns are requested. Note: RLS is row-level, so the anon key can still read
+            // every column of `records` (including "Notes") through the REST API unless you restrict it.
+            columns: 'id,Title,Artists,Year,Folder',
+            pageSize: 1000,                       // requested page size; the loader copes if the server returns fewer
+            cacheKey: 'brightlights:records:v1',  // bump suffix if the stored row shape changes
+            renderChunk: 50,                      // cards rendered per "page"
+            searchDebounceMs: 80,
+        };
+
+        /* Lights config. Only this object, the cube map and the `lights` module need to change when the
+         * hardware goes live. Nothing in the UI code knows how lighting is delivered.
+         * Payload values mirror Architecture.md section 6 and the "Reset to Warm Ambient Glow" JSON. */
+        const LIGHTS_CONFIG = {
+            mode: 'off',                          // 'off' | 'wled-http' | 'supabase-relay'
+            wledBaseUrl: 'http://wled-kallax.local', // wled-http only; use the reserved IP from SOP Procedure A if mDNS is flaky
+            relayTable: 'light_commands',         // supabase-relay only
+            cubesTable: 'cubes',                  // source of LED ranges (led_start_index / led_stop_index)
+            timeoutMs: 3000,
+            totalLeds: 320,                       // ambient segment spans 0..totalLeds (from the reset payload)
+            active:  { bri: 255, transition: 5,  colour: [255, 180, 50]  },
+            ambient: { bri: 51,  transition: 10, colour: [255, 200, 120] },
+            holdSeconds: 20,                      // how long a cube stays lit before the page restores ambient
+        };
+
+        /* Static fallback for cube -> LED range, used if the `cubes` table can't be read. e.g.
+         *   '001A': { start: 0, stop: 19 },
+         * `stop` is passed to WLED unchanged, and WLED treats it as exclusive. */
+        const CUBE_MAP = {};
+
+        /* =====================================================================
+         * 2. DATA LAYER: fetch, cache, normalise
+         * ===================================================================== */
+        const db = supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey);
+
+        // Accent/case-insensitive matching helper
+        const fold = (s) => String(s ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+
+        // "001A. Bangers" -> cube "001A", label "Bangers".
+        // Anything else ("0000. Unhoused", "000. In Transit", "Uncategorized", "Rock", "") has no cube.
+        const CUBE_RE = /^\s*(\d{3}[A-Z])\b\.?\s*(.*)$/i;
+        const NUMBER_PREFIX_RE = /^\s*\d+[A-Za-z]?\.\s*/;
+        // Discogs disambiguators: "Copyright (6)" -> "Copyright"
+        const DISCOGS_SUFFIX_RE = /\s*\(\d+\)/g;
+
+        function normalize(row) {
+            const folder = String(row.Folder ?? '').trim();
+            const m = CUBE_RE.exec(folder);
+            const cube = m ? m[1].toUpperCase() : null;
+            const label = (m ? m[2] : folder.replace(NUMBER_PREFIX_RE, '')).trim();
+            const title = String(row.Title ?? '').trim();
+            const artist = String(row.Artists ?? '').replace(DISCOGS_SUFFIX_RE, '').trim();
+            const yearNum = Number(row.Year);
+            return {
+                id: row.id,
+                title,
+                artist,
+                year: yearNum > 0 ? String(yearNum) : '',
+                cube,
+                label,
+                haystack: fold(`${artist} ${title} ${cube ?? ''} ${label}`),
+                sortKey: fold(`${artist} ${title}`),
+            };
+        }
+
+        // Pages through the table. Advances by the number of rows actually received, so a server
+        // max-rows setting below pageSize can't silently skip or truncate rows.
+        async function fetchAllRecords() {
+            const rows = [];
+            let total = null;
+            while (total === null || rows.length < total) {
+                const first = total === null;
+                const { data, error, count } = await db
+                    .from(CONFIG.table)
+                    .select(CONFIG.columns, first ? { count: 'exact' } : undefined)
+                    .order('id', { ascending: true })
+                    .range(rows.length, rows.length + CONFIG.pageSize - 1);
+                if (error) throw error;
+                if (first) total = typeof count === 'number' ? count : Infinity;
+                if (!data.length) break;
+                rows.push(...data);
+            }
+            return rows;
+        }
+
+        // localStorage can be unavailable (private mode, quota). Everything is wrapped; the app works without it.
+        function readCache() {
+            try { return localStorage.getItem(CONFIG.cacheKey); } catch { return null; }
+        }
+        function writeCache(raw) {
+            try { localStorage.setItem(CONFIG.cacheKey, raw); } catch { /* ignore */ }
+        }
+
+        /* =====================================================================
+         * 3. LIGHTS MODULE: the only code that knows about hardware
+         * ===================================================================== */
+        class LightsError extends Error {
+            constructor(code, message) { super(message); this.code = code; }
+        }
+
+        function timeoutSignal(ms) {
+            if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) return AbortSignal.timeout(ms);
+            const c = new AbortController();
+            setTimeout(() => c.abort(), ms);
+            return c.signal;
+        }
+
+        let cubeMap = { ...CUBE_MAP };
+        let cubeMapLoaded = false;
+        let resetTimer = null;
+
+        // Reads LED ranges from the `cubes` table so the database stays the single source of truth.
+        async function loadCubeMap() {
+            if (LIGHTS_CONFIG.mode === 'off') return;
+            try {
+                const { data, error } = await db
+                    .from(LIGHTS_CONFIG.cubesTable)
+                    .select('cube_id,led_start_index,led_stop_index');
+                if (error) throw error;
+                for (const c of data) {
+                    cubeMap[String(c.cube_id).toUpperCase()] = { start: c.led_start_index, stop: c.led_stop_index };
+                }
+                cubeMapLoaded = true;
+            } catch (err) {
+                console.warn('Could not read cubes table; using static CUBE_MAP only.', err);
+                cubeMapLoaded = Object.keys(cubeMap).length > 0;
+            }
+        }
+
+        // WLED payloads. Shapes follow Architecture.md section 6: one segment (id 0) re-bounded per cube.
+        // To verify on the hardware: LEDs outside segment 0 should go dark while a cube is lit.
+        function cubePayload(range) {
+            const a = LIGHTS_CONFIG.active;
+            return { on: true, bri: a.bri, transition: a.transition,
+                     seg: [{ id: 0, start: range.start, stop: range.stop, col: [a.colour], fx: 0 }] };
+        }
+        function ambientPayload() {
+            const a = LIGHTS_CONFIG.ambient;
+            return { on: true, bri: a.bri, transition: a.transition,
+                     seg: [{ id: 0, start: 0, stop: LIGHTS_CONFIG.totalLeds, col: [a.colour], fx: 0 }] };
+        }
+
+        async function postWled(payload) {
+            const res = await fetch(`${LIGHTS_CONFIG.wledBaseUrl}/json/state`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: timeoutSignal(LIGHTS_CONFIG.timeoutMs),
+            });
+            if (!res.ok) throw new LightsError('http', `WLED responded ${res.status}`);
+        }
+
+        const transports = {
+            // Direct browser -> WLED. Blocked on an HTTPS page (mixed content); see the review notes.
+            // The restore-to-ambient timer lives in this page, so closing the tab before it fires leaves the cube lit.
+            async wledHttp(cube) {
+                const range = cubeMap[cube];
+                if (!range) throw new LightsError('unmapped', `No LED range for ${cube}`);
+                await postWled(cubePayload(range));
+                clearTimeout(resetTimer);
+                resetTimer = setTimeout(() => {
+                    postWled(ambientPayload()).catch((e) => console.warn('Ambient reset failed', e));
+                }, LIGHTS_CONFIG.holdSeconds * 1000);
+            },
+
+            // Insert a command row; a listener at home (Pi etc.) posts the WLED payloads and owns the timing.
+            // Needs a tightly scoped anon INSERT-only RLS policy and rate limiting on the table.
+            async supabaseRelay(cube) {
+                const { error } = await db.from(LIGHTS_CONFIG.relayTable).insert({ cube });
+                if (error) throw new LightsError('relay', error.message);
+            },
+        };
+
+        const lights = {
+            // Should this cube get a Light Up button?
+            canLight(cube) {
+                if (!cube) return false;
+                if (LIGHTS_CONFIG.mode === 'off') return true;            // keep buttons visible while developing
+                if (!cubeMapLoaded) return LIGHTS_CONFIG.mode === 'supabase-relay';
+                return Boolean(cubeMap[cube]);                           // e.g. floor cubes 013A/013B have no LEDs
+            },
+            async light(cube) {
+                switch (LIGHTS_CONFIG.mode) {
+                    case 'wled-http': return transports.wledHttp(cube);
+                    case 'supabase-relay': return transports.supabaseRelay(cube);
+                    default: throw new LightsError('disabled', 'Lights are not connected yet');
+                }
+            },
+            async reset() {
+                if (LIGHTS_CONFIG.mode === 'wled-http') return postWled(ambientPayload());
+            },
+        };
+
+        /* =====================================================================
+         * 4. UI
+         * ===================================================================== */
+        const els = {
+            input: document.getElementById('search-input'),
+            clear: document.getElementById('clear-btn'),
+            chips: document.getElementById('chips'),
+            results: document.getElementById('results-container'),
+            status: document.getElementById('status-message'),
+            count: document.getElementById('record-count'),
+            more: document.getElementById('more-btn'),
+            retry: document.getElementById('retry-btn'),
+            toast: document.getElementById('toast'),
+            tpl: document.getElementById('card-template'),
+        };
+
+        const NOT_ON_SHELF = '~none';
+
+        const state = {
+            alpha: [],        // all records, sorted by artist/title
+            places: [],       // [{ key: '001A', label: 'Bangers', count }]
+            noneCount: 0,     // records with no cube
+            query: '',
+            place: null,      // null = all, cube code, or NOT_ON_SHELF
+            visible: CONFIG.renderChunk,
+            results: [],
+        };
+
+        const chipEls = new Map();
+        const CHIP_BASE = 'shrink-0 h-10 px-4 rounded-full text-sm font-medium border transition whitespace-nowrap ';
+        const CHIP_ON = 'bg-accentGold text-vinylDark border-accentGold';
+        const CHIP_OFF = 'bg-vinylCard text-gray-200 border-gray-700 active:border-accentGold';
+
+        let cachedRaw = null;
+
+        function setRecords(rows) {
+            // Ignore blank rows (the Ogger export ends with an empty line).
+            const recs = rows
+                .filter((r) => String(r.Artists ?? '').trim() || String(r.Title ?? '').trim())
+                .map(normalize);
+            state.alpha = recs.sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0));
+
+            const byCube = new Map();
+            let none = 0;
+            for (const r of recs) {
+                if (!r.cube) { none++; continue; }
+                const e = byCube.get(r.cube) || { key: r.cube, label: r.label, count: 0 };
+                e.count++;
+                byCube.set(r.cube, e);
+            }
+            state.places = [...byCube.values()].sort((a, b) => (a.key < b.key ? -1 : 1));
+            state.noneCount = none;
+
+            if (state.place && state.place !== NOT_ON_SHELF && !byCube.has(state.place)) state.place = null;
+
+            els.count.textContent = `${recs.length} records`;
+            renderChips();
+            applyFilters();
+        }
+
+        function applyFilters() {
+            const terms = fold(state.query).split(/\s+/).filter(Boolean);
+            const browsing = terms.length === 0 && !state.place;
+
+            let list = state.alpha;
+            if (state.place === NOT_ON_SHELF) list = list.filter((r) => !r.cube);
+            else if (state.place) list = list.filter((r) => r.cube === state.place);
+            if (terms.length) list = list.filter((r) => terms.every((t) => r.haystack.includes(t)));
+
+            state.results = list;
+            state.visible = CONFIG.renderChunk;
+            renderResults({ browsing });
+        }
+
+        function styleChip(btn, active) {
+            btn.className = CHIP_BASE + (active ? CHIP_ON : CHIP_OFF);
+            btn.setAttribute('aria-pressed', String(active));
+        }
+
+        function renderChips() {
+            els.chips.textContent = '';
+            chipEls.clear();
+            const make = (key, label) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.textContent = label;
+                b.addEventListener('click', () => setPlace(state.place === key ? null : key));
+                styleChip(b, state.place === key);
+                chipEls.set(key, b);
+                els.chips.appendChild(b);
+            };
+            const all = document.createElement('button');
+            all.type = 'button';
+            all.textContent = 'All';
+            all.addEventListener('click', () => setPlace(null));
+            styleChip(all, state.place === null);
+            chipEls.set(null, all);
+            els.chips.appendChild(all);
+
+            for (const p of state.places) make(p.key, p.label ? `${p.key} · ${p.label}` : p.key);
+            if (state.noneCount > 0) make(NOT_ON_SHELF, `Not on a shelf (${state.noneCount})`);
+        }
+
+        // Updates chip styles in place so the scroll position of the chip rail is kept.
+        function setPlace(key) {
+            state.place = key;
+            for (const [k, btn] of chipEls) styleChip(btn, k === key);
+            applyFilters();
+            window.scrollTo({ top: 0 });
+        }
+
+        function buildCard(rec) {
+            const node = els.tpl.content.firstElementChild.cloneNode(true);
+            const q = (role) => node.querySelector(`[data-role="${role}"]`);
+
+            const cubeEl = q('cube');
+            cubeEl.textContent = rec.cube ?? '—';
+            cubeEl.className += rec.cube
+                ? ' bg-accentGold/10 border-accentGold/30 text-accentGold'
+                : ' bg-gray-800 border-gray-700 text-gray-500';
+
+            q('title').textContent = rec.title || 'Untitled';
+            q('artist').textContent = rec.artist || 'Unknown artist';
+            q('meta').textContent = [rec.year, rec.label].filter(Boolean).join(' · ');
+
+            const btn = q('light');
+            if (lights.canLight(rec.cube)) {
+                btn.dataset.cube = rec.cube;
+                btn.textContent = '💡';
+                btn.setAttribute('aria-label', `Light up cube ${rec.cube}`);
+            } else {
+                btn.hidden = true; // no cube, or a cube with no LEDs: nothing to light
+            }
+            return node;
+        }
+
+        function renderResults({ browsing = false } = {}) {
+            els.results.textContent = '';
+            els.retry.hidden = true;
+
+            const total = state.results.length;
+            if (total === 0) {
+                els.status.textContent = state.query || state.place ? 'No matches found.' : 'No records found.';
+                els.more.hidden = true;
+                return;
+            }
+
+            const frag = document.createDocumentFragment();
+            for (const rec of state.results.slice(0, state.visible)) frag.appendChild(buildCard(rec));
+            els.results.appendChild(frag);
+            updateStatus(browsing);
+        }
+
+        function appendMore() {
+            const start = state.visible;
+            state.visible += CONFIG.renderChunk;
+            const frag = document.createDocumentFragment();
+            for (const rec of state.results.slice(start, state.visible)) frag.appendChild(buildCard(rec));
+            els.results.appendChild(frag);
+            updateStatus(!state.query && !state.place);
+        }
+
+        function updateStatus(browsing) {
+            const total = state.results.length;
+            const shown = Math.min(state.visible, total);
+            els.status.textContent = browsing
+                ? `Browse A–Z · ${shown} of ${total}`
+                : `${total} result${total === 1 ? '' : 's'}${shown < total ? ` · showing ${shown}` : ''}`;
+            els.more.hidden = shown >= total;
+        }
+
+        /* ---- Toast + light button feedback ---- */
+        let toastTimer;
+        function toast(msg) {
+            els.toast.textContent = msg;
+            els.toast.classList.remove('opacity-0');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => els.toast.classList.add('opacity-0'), 2600);
+        }
+
+        function flashButton(btn, text) {
+            btn.textContent = text;
+            setTimeout(() => {
+                btn.textContent = '💡';
+                btn.disabled = false;
+            }, 2200);
+        }
+
+        els.results.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-cube]');
+            if (!btn || btn.disabled) return;
+            const cube = btn.dataset.cube;
+            btn.disabled = true;
+            btn.textContent = '…';
+            try {
+                await lights.light(cube);
+                flashButton(btn, '✓');
+            } catch (err) {
+                if (err instanceof LightsError && err.code === 'disabled') {
+                    toast(`Lights aren't connected yet. Cube ${cube} is on the shelf.`);
+                } else if (err instanceof LightsError && err.code === 'unmapped') {
+                    toast(`Cube ${cube} has no light assigned yet.`);
+                } else {
+                    console.error('Light error:', err);
+                    toast("Couldn't reach the shelf lights.");
+                }
+                flashButton(btn, '!');
+            }
+        });
+
+        /* ---- Search input ---- */
+        let searchTimer;
+        els.input.addEventListener('input', () => {
+            els.clear.hidden = els.input.value.length === 0;
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(() => {
+                state.query = els.input.value.trim();
+                applyFilters();
+            }, CONFIG.searchDebounceMs);
+        });
+        els.input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') els.input.blur(); // dismiss the keyboard so results are visible
+        });
+        els.clear.addEventListener('click', () => {
+            els.input.value = '';
+            els.clear.hidden = true;
+            state.query = '';
+            applyFilters();
+            els.input.focus();
+        });
+        els.more.addEventListener('click', appendMore);
+        els.retry.addEventListener('click', () => init());
+
+        /* =====================================================================
+         * 5. BOOT: show cached data instantly, then refresh in the background
+         * ===================================================================== */
+        async function init() {
+            els.retry.hidden = true;
+
+            // Cube map loads in parallel; once known, cards re-render so unmapped cubes lose their button.
+            loadCubeMap().then(() => { if (state.alpha.length) applyFilters(); });
+
+            if (state.alpha.length === 0) {
+                cachedRaw = readCache();
+                if (cachedRaw) {
+                    try {
+                        setRecords(JSON.parse(cachedRaw));
+                    } catch {
+                        cachedRaw = null; // corrupt cache; fall through to network
+                    }
+                } else {
+                    els.status.textContent = 'Loading library…';
+                }
+            }
+
+            try {
+                const rows = await fetchAllRecords();
+                const raw = JSON.stringify(rows);
+                if (raw !== cachedRaw) {
+                    cachedRaw = raw;
+                    writeCache(raw);
+                    setRecords(rows);
+                }
+            } catch (err) {
+                console.error('Load error:', err);
+                if (state.alpha.length > 0) {
+                    toast('Offline: showing your saved library.');
+                } else {
+                    els.count.textContent = 'Offline';
+                    els.status.textContent = "Couldn't load the library. Check your connection.";
+                    els.retry.hidden = false;
+                }
+            }
+
+            // Don't pop the keyboard on touch devices; it would cover half the list on load.
+            if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) els.input.focus();
+        }
+
+        init();
+    })();
+    </script>
+</body>
+</html>
