@@ -340,6 +340,12 @@
             visible: CONFIG.renderChunk,
             results: [],
         };
+        // Parse URL query parameters on load (e.g. ?cube=001A from an NFC tag)
+        const urlParams = new URLSearchParams(window.location.search);
+        const queryCube = urlParams.get('cube');
+        if (queryCube) {
+            state.place = queryCube.toUpperCase();
+        }
 
         const chipEls = new Map();
         const CHIP_BASE = 'shrink-0 h-10 px-4 rounded-full text-sm font-medium border transition whitespace-nowrap ';
